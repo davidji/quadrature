@@ -8,6 +8,8 @@
 extern crate panic_semihosting;
 extern crate nb;
 
+use nb::Error::WouldBlock;
+
 use stm32f1xx_hal::{
     prelude::*,
     pac,
@@ -20,7 +22,6 @@ use stm32f1xx_hal::gpio::{ Alternate, Floating, Input, PushPull };
 use stm32f1::stm32f103;
 
 use serial_line_ip::{ Decoder };
-
 
 type CommandUsart = stm32f103::USART2;
 type CommandSerial = Serial<CommandUsart, (PA2<Alternate<PushPull>>, PA3<Input<Floating>>)>;
@@ -92,6 +93,16 @@ fn command_serial () -> CommandSerial {
 
 }
 
-fn command_poll(_tx : &CommandTx, _rx : &CommandRx) {
-
+fn command_poll(tx : &mut CommandTx, rx : &mut CommandRx) {
+    loop {
+        match rx.read() {
+            Ok(byte) => tx.write(byte).unwrap(),
+            Err(err) => {
+                match err {
+                    WouldBlock => break,
+                    _ => panic!("Error reading from command serial"),
+                }
+            },
+        };
+    }
 }
