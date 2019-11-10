@@ -6,17 +6,20 @@ name = "quadrature"
 version = "0.1.0"
 
 [dependencies]
+embedded-hal = "0.2.3"
 stm32f1xx-hal = { version = "0.4.0", features = ["rt", "stm32f103" ] }
-cortex-m = "0.6.0"
+cortex-m = "0.6.1"
 # cortex-m-rt = "0.6.10"
-cortex-m-semihosting = "0.3.4"
-panic-semihosting = "0.5.2"
+cortex-m-semihosting = "0.3.5"
+panic-semihosting = "0.5.3"
 # cortex-m-rtfm = "0.5.0-alpha.1"
-cortex-m-rtfm = { git = "https://github.com/japaric/cortex-m-rtfm" }
-
-[dependencies.stm32f1]
-version = "0.8.0"
-features = ["stm32f103", "rt"]
+cortex-m-rtfm = { git = "https://github.com/rtfm-rs/cortex-m-rtfm" }
+serial-line-ip = "0.4.0"
+nb = "0.1.2"
+stm32-usbd = { version = "0.4", features = ["stm32f103xx"] }
+usb-device = "0.2.3"
+usbd-serial = "0.1"
+stm32f1 = "0.8.0"
 
 # Uncomment for the panic example.
 # panic-itm = "0.4.1"

@@ -6,4 +6,4 @@ something like this in C++ both in Chibios and MBed, so I can compare the experi
 This is mostly following instructions in [RTFM by example, Starting a new project][rtfm-by-example-new], and the [the embedded Rust book][book]
 
 [book]: https://rust-embedded.github.io/book
-[rtfm-by-example-new]: https://japaric.github.io/cortex-m-rtfm/book/en/by-example/new.html
+[rtfm-by-example-new]: https://rtfm.rs/0.5/book/en/
