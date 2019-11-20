@@ -10,6 +10,10 @@ extern crate nb;
 use nb::Error::WouldBlock;
 use nb::block;
 
+use heapless::{
+    spsc::{Queue},
+    consts::*
+};
 use stm32f1xx_hal::{
     prelude::*,
     pac,
@@ -21,12 +25,16 @@ use stm32f1xx_hal::gpio::gpioa::{ PA2, PA3 };
 use stm32f1xx_hal::gpio::{ Alternate, Floating, Input, PushPull };
 use stm32f1::stm32f103;
 
-use serial_line_ip::{ Decoder };
 
 type CommandUsart = stm32f103::USART2;
 type CommandSerial = Serial<CommandUsart, (PA2<Alternate<PushPull>>, PA3<Input<Floating>>)>;
 type CommandTx = serial::Tx<CommandUsart>;
 type CommandRx = serial::Rx<CommandUsart>;
+type CommandTxQueue = Queue<u8, U16>;
+
+/* This is how many bytes might get bufferred while we
+ * process an incoming message
+ */
 
 #[rtfm::app(device = stm32f1::stm32f103)]
 const APP: () = {
@@ -34,7 +42,7 @@ const APP: () = {
     struct Resources {
         command_tx: CommandTx,
         command_rx: CommandRx,
-        decoder: Decoder
+        command_tx_queue: CommandTxQueue
     }
 
     #[init]
@@ -47,12 +55,29 @@ const APP: () = {
         init::LateResources {
             command_tx: tx,
             command_rx: rx,
-            decoder: Decoder::new() }
+            command_tx_queue : Queue::new()
+        }
     }
 
-    #[task(binds = USART2, resources = [command_tx, command_rx])]
-    fn command_serial_interrupt(c: command_serial_interrupt::Context) {
-        command_poll(c.resources.command_tx, c.resources.command_rx);
+    #[task(binds = USART2, 
+           resources = [command_tx, command_rx, command_tx_queue],
+           spawn = [ command_serial_in ])]
+    fn command_serial_poll(c: command_serial_poll::Context) {
+       loop {
+            match c.resources.command_rx.read() {
+                Ok(byte) => c.spawn.command_serial_in(byte).unwrap(),
+                Err(WouldBlock) => break,
+                Err(_) => panic!("Error reading from command serial"),
+            }
+        };
+
+        write_from_queue(c.resources.command_tx, c.resources.command_tx_queue);
+    }
+
+    #[task(capacity = 16, resources = [command_tx, command_tx_queue])]
+    fn command_serial_in(c: command_serial_in::Context, byte: u8) {
+        c.resources.command_tx_queue.enqueue(to_upper(byte)).unwrap();
+        write_from_queue(c.resources.command_tx, c.resources.command_tx_queue);
     }
 
     extern "C" {
@@ -95,23 +120,27 @@ fn command_serial () -> CommandSerial {
 
 }
 
+fn write_from_queue(
+    command_tx : &mut CommandTx, 
+    command_tx_queue: &mut CommandTxQueue) {
+        loop {
+            match command_tx_queue.peek() {
+                Some(byte) => {
+                    match command_tx.write(*byte) {
+                        Ok(_) => assert!(command_tx_queue.dequeue().is_some()),
+                        Err(WouldBlock) => break,
+                        Err(_) => panic!("Error writing to command serial"),
+                    }
+                }
+                None => break
+            }
+        }
+
+}
+
 fn command_write(tx : &mut CommandTx, s : & str) {
     for c in s.chars() {
         block!(tx.write(c as u8)).unwrap();
-    }
-}
-
-fn command_poll(tx : &mut CommandTx, rx : &mut CommandRx) {
-    'nonblockrx: loop {
-        match rx.read() {
-            Ok(byte) => block!(tx.write(to_upper(byte))).unwrap(),
-            Err(err) => {
-                match err {
-                    WouldBlock => break 'nonblockrx,
-                    _ => panic!("Error reading from command serial"),
-                }
-            },
-        };
     }
 }
 
