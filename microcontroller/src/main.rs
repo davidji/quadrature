@@ -10,10 +10,6 @@ extern crate nb;
 use nb::Error::WouldBlock;
 use nb::block;
 
-use heapless::{
-    spsc::{Queue},
-    consts::*
-};
 use stm32f1xx_hal::{
     prelude::*,
     pac,
@@ -21,16 +17,30 @@ use stm32f1xx_hal::{
     serial,
 };
 
+use arraydeque::{
+    ArrayDeque,
+    Wrapping
+    };
+
 use stm32f1xx_hal::gpio::gpioa::{ PA2, PA3 };
 use stm32f1xx_hal::gpio::{ Alternate, Floating, Input, PushPull };
 use stm32f1::stm32f103;
+use postcard;
+mod protocol;
 
+const BUFFER_LENGTH : usize = 512;
+const DELIMITER : u8 = 0;
+
+type Buffer = [u8; BUFFER_LENGTH];
 
 type CommandUsart = stm32f103::USART2;
 type CommandSerial = Serial<CommandUsart, (PA2<Alternate<PushPull>>, PA3<Input<Floating>>)>;
 type CommandTx = serial::Tx<CommandUsart>;
 type CommandRx = serial::Rx<CommandUsart>;
-type CommandTxQueue = Queue<u8, U16>;
+type CommandTxQueue = ArrayDeque<Buffer>;
+// We can't block on receiving, so Wrapping is the right behaviour
+type CommandRxQueue = ArrayDeque<Buffer,Wrapping>;
+
 
 /* This is how many bytes might get bufferred while we
  * process an incoming message
@@ -42,7 +52,8 @@ const APP: () = {
     struct Resources {
         command_tx: CommandTx,
         command_rx: CommandRx,
-        command_tx_queue: CommandTxQueue
+        command_tx_queue: CommandTxQueue,
+        command_rx_queue: CommandRxQueue
     }
 
     #[init]
@@ -55,29 +66,52 @@ const APP: () = {
         init::LateResources {
             command_tx: tx,
             command_rx: rx,
-            command_tx_queue : Queue::new()
+            command_tx_queue: ArrayDeque::new(),
+            command_rx_queue: ArrayDeque::new()
         }
     }
 
     #[task(binds = USART2, 
-           resources = [command_tx, command_rx, command_tx_queue],
-           spawn = [ command_serial_in ])]
+           resources = [command_tx, command_rx, command_tx_queue, command_rx_queue],
+           spawn = [ command_serial_rx_frame ])]
     fn command_serial_poll(c: command_serial_poll::Context) {
        loop {
             match c.resources.command_rx.read() {
-                Ok(byte) => c.spawn.command_serial_in(byte).unwrap(),
+                Ok(byte) => {
+                    c.resources.command_rx_queue.push_back(byte);
+                    if byte == DELIMITER {
+                        c.spawn.command_serial_rx_frame(c.resources.command_rx_queue.len()).unwrap()
+                    }
+                },
                 Err(WouldBlock) => break,
                 Err(_) => panic!("Error reading from command serial"),
             }
         };
 
-        write_from_queue(c.resources.command_tx, c.resources.command_tx_queue);
+        write_from_queue_nb(c.resources.command_tx, c.resources.command_tx_queue);
     }
 
-    #[task(capacity = 16, resources = [command_tx, command_tx_queue])]
-    fn command_serial_in(c: command_serial_in::Context, byte: u8) {
-        c.resources.command_tx_queue.enqueue(to_upper(byte)).unwrap();
-        write_from_queue(c.resources.command_tx, c.resources.command_tx_queue);
+    #[task(resources = [command_rx_queue])]
+    fn command_serial_rx_frame(c: command_serial_rx_frame::Context, length: usize) {
+        let mut drain = c.resources.command_rx_queue.drain(..length);
+        let mut packet : Buffer = [0; BUFFER_LENGTH];
+        for i in 0..length {
+            match drain.next() {
+                Some(byte) => packet[i] = byte,
+                None => break
+            }
+        }
+
+        let result : postcard::Result<protocol::Request>  = postcard::from_bytes_cobs(&mut packet[0..length]);
+        match result {
+            Ok(request) => match request.body {
+                protocol::RequestBody::Ping(_) => {
+
+                }
+            }
+            Err(_) => {},
+        }
+
     }
 
     extern "C" {
@@ -116,18 +150,16 @@ fn command_serial () -> CommandSerial {
         clocks,
         &mut rcc.apb1,
     );
-
-
 }
 
-fn write_from_queue(
+fn write_from_queue_nb(
     command_tx : &mut CommandTx, 
     command_tx_queue: &mut CommandTxQueue) {
         loop {
-            match command_tx_queue.peek() {
+            match command_tx_queue.front() {
                 Some(byte) => {
                     match command_tx.write(*byte) {
-                        Ok(_) => assert!(command_tx_queue.dequeue().is_some()),
+                        Ok(_) => assert!(command_tx_queue.pop_front().is_some()),
                         Err(WouldBlock) => break,
                         Err(_) => panic!("Error writing to command serial"),
                     }
@@ -144,9 +176,3 @@ fn command_write(tx : &mut CommandTx, s : & str) {
     }
 }
 
-fn to_upper(byte: u8) -> u8 {
-    match byte as char {
-        'a'..='z' => return byte - ('a' as u8 - 'A' as u8),
-        _ => return byte
-    }
-}
