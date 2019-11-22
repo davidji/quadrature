@@ -26,7 +26,7 @@ use stm32f1xx_hal::gpio::gpioa::{ PA2, PA3 };
 use stm32f1xx_hal::gpio::{ Alternate, Floating, Input, PushPull };
 use stm32f1::stm32f103;
 use postcard;
-mod protocol;
+use protocol;
 
 const BUFFER_LENGTH : usize = 512;
 const DELIMITER : u8 = 0;

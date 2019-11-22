@@ -1,6 +1,6 @@
 
 [workspace]
-readme = "README.md"
+
 members = [
     "protocol",
     "client",

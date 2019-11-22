@@ -1,6 +1,4 @@
-#![no_main]
-#![no_std]
-
+#![cfg_attr(not(any(test, feature = "use-std")), no_std)]
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
