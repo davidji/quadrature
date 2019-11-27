@@ -4,10 +4,11 @@ use serialport;
 use serialport::{ SerialPortSettings, FlowControl,DataBits,Parity,StopBits };
 use postcard;
 use protocol;
-use std::io;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::time::Duration;
 use std::{ thread };
+
+const DELIMITER : u8 = 0;
 
 fn main() {
     let matches = App::new("quadrature-ping")
@@ -36,62 +37,41 @@ fn main() {
         flow_control: FlowControl::None,
         parity: Parity::None,
         stop_bits: StopBits::One,
-        timeout: Duration::from_millis(1)
+        timeout: Duration::from_millis(2000)
     };
     
     let mut serial_port = serialport::open_with_settings(serial_device_path, &settings).unwrap();
     let mut sending_port = serial_port.try_clone().expect("Failed to clone");
     
-    thread::spawn(move || for id in 0..1000 {
+    thread::spawn(move || for id in 0.. {
         let request = protocol::Request {
-            correlation_id: id%32,
+            correlation_id: id,
             body: protocol::RequestBody::Ping
         };
         
         let mut buffer : [u8; 256] = [0; 256];
         let frame = postcard::to_slice_cobs(&request, &mut buffer).unwrap();
         sending_port.write(&frame[..]).unwrap();
-        // println!("Sending: {:?}", &frame[..]);
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(1000));
     });
     
-    let mut accumulator : Vec<u8> = Vec::new();
-    for expected in 0..1000 {
-        loop {
-            let mut buffer: [u8; 32] = [0; 32];
-            match serial_port.read(&mut buffer) {
-                Ok(bytes) if bytes > 0 => {
-                    accumulator.extend_from_slice(&buffer[..bytes]);
-                    let mut frame = accumulator.clone();
-                    let nonzero = frame.iter().position(|&x| x != 0).unwrap_or(0);
-                    let zero = frame.iter().position(|&x| x != 0);
-                    if zero.is_some() && zero.unwrap() > nonzero {
-                        let result : 
-                        postcard::Result<(protocol::Response, &mut [u8])> = 
-                        postcard::take_from_bytes_cobs(&mut frame[nonzero..]);
-                        match result {
-                            Ok((response, unused)) => {
-                                if expected%32 != response.correlation_id {
-                                    println!("Incorrect response: {:?} for {:?}", 
-                                    response.correlation_id, expected%32);
-                                    eprintln!("{:?}", accumulator);
-                                }
-                                accumulator.clear();
-                                accumulator.extend_from_slice(&unused[1..]);
-                                break;
-                            },
-                            Err(postcard::Error::DeserializeUnexpectedEnd) => {},
-                            Err(e) =>  {
-                                eprintln!("Deserialisation error: {:?}", e);
-                                eprintln!("{:?}", &buffer[..bytes]);
-                            }
-                        }
-                    }
-                }
-                Ok(_) => {}
-                Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
-                Err(e) => eprintln!("Serial IO error: {:?}", e),
+    let buffered = BufReader::new(&mut serial_port);
+    for unterminated in buffered.split(DELIMITER) {
+        let mut frame = unterminated.unwrap().clone();
+        frame.push(DELIMITER);
+        let result : 
+            postcard::Result<(protocol::Response, &mut [u8])> = 
+            postcard::take_from_bytes_cobs(&mut frame[..]);
+        match result {
+            Ok((response, _)) => {
+                println!("Response: {:?}", response.correlation_id);
+            },
+            Err(e) =>  {
+                eprintln!("Deserialisation error: {:?}", e);
+                eprintln!("{:?}", &frame[..]);
             }
         }
+
     }
+
 }
