@@ -4,10 +4,10 @@
 #![no_main]
 #![no_std]
 
+mod rpc;
+
 extern crate panic_semihosting;
 extern crate nb;
-
-use nb::Error::WouldBlock;
 
 use stm32f1xx_hal::{
     prelude::*,
@@ -16,93 +16,71 @@ use stm32f1xx_hal::{
     serial,
 };
 
-use arraydeque::{
-    ArrayDeque,
-    Wrapping,
-    };
-
 use stm32f1xx_hal::gpio::gpiob::{ PB6, PB7 };
 use stm32f1xx_hal::gpio::{ Alternate, Floating, Input, PushPull };
 use stm32f1::stm32f103;
-use postcard;
 use protocol;
+use heapless::{ consts::* };
 
-const BUFFER_LENGTH : usize = 512;
-const DELIMITER : u8 = 0;
-
-type Buffer = [u8; BUFFER_LENGTH];
+type Transport = rpc::Transport<'static, U256, U256>;
+type Service = rpc::Service<'static, U256, U256, U256>;
 
 type CommandUsart = stm32f103::USART1;
 type CommandSerial = Serial<CommandUsart, (PB6<Alternate<PushPull>>, PB7<Input<Floating>>)>;
 type CommandTx = serial::Tx<CommandUsart>;
 type CommandRx = serial::Rx<CommandUsart>;
-type CommandTxQueue = ArrayDeque<Buffer>;
-// We can't block on receiving, so Wrapping is the right behaviour
-type CommandRxQueue = ArrayDeque<Buffer,Wrapping>;
-
-
-/* This is how many bytes might get bufferred while we
- * process an incoming message
- */
 
 #[rtfm::app(device = stm32f1::stm32f103)]
 const APP: () = {
 
     struct Resources {
+        transport: Transport,
+        service: Service,
         command_tx: CommandTx,
         command_rx: CommandRx,
-        command_tx_queue: CommandTxQueue,
-        command_rx_queue: CommandRxQueue,
-        tx_counter: u32,
-        rx_counter: u32,
     }
 
     #[init]
     fn init(_: init::Context) -> init::LateResources {
+        static mut RPC: Option<rpc::Rpc<U256, U256>> = None;
+        *RPC = Some(rpc::Rpc::new());
+        let (transport, service) = RPC.as_mut().unwrap().split();
+
         rtfm::pend(stm32f103::Interrupt::USART1);
         let command_serial = command_serial();
         let (mut tx, mut rx) = command_serial.split();
         rx.listen();
         tx.listen();
+
         init::LateResources {
+            transport: transport,
+            service: service,
             command_tx: tx,
             command_rx: rx,
-            command_tx_queue: ArrayDeque::new(),
-            command_rx_queue: ArrayDeque::new(),
-            tx_counter: 0,
-            rx_counter: 0,
         }
     }
 
     #[task(binds = USART1, 
            resources = [command_tx, 
-                        command_rx, 
-                        command_tx_queue, 
-                        command_rx_queue],
+                        command_rx,
+                        transport],
            spawn = [ command_serial_rx_frame ])]
     fn command_serial_poll(c: command_serial_poll::Context) {
-        while read_to_queue_nb(c.resources.command_rx, c.resources.command_rx_queue) {
+        while c.resources.transport.read_nb(c.resources.command_rx) {
             c.spawn.command_serial_rx_frame().unwrap();
         }
-        write_from_queue_nb(c.resources.command_tx, c.resources.command_tx_queue);
+        c.resources.transport.write_nb(c.resources.command_tx);
     }
 
-    #[task(resources = [command_tx, command_tx_queue])]
+    #[task(resources = [command_tx, transport])]
     fn command_serial_tx(c: command_serial_tx::Context) {
-        write_from_queue_nb(c.resources.command_tx, c.resources.command_tx_queue);
+        c.resources.transport.write_nb(c.resources.command_tx);
     }
 
-    #[task(resources = [command_rx_queue, command_tx_queue],
+    #[task(resources = [service],
             spawn = [command_serial_tx])]
     fn command_serial_rx_frame(c: command_serial_rx_frame::Context) {
-        let mut frame : Buffer = [0; BUFFER_LENGTH];
-        match pop_frame(c.resources.command_rx_queue, &mut frame) {
-            Some(length) => {
-                process_request_frame(&mut frame[..length], c.resources.command_tx_queue);
-                c.spawn.command_serial_tx().unwrap();
-            }
-            None => {}
-        }
+        c.resources.service.process(process_request);
     }
 
     extern "C" {
@@ -148,82 +126,18 @@ fn command_serial () -> CommandSerial {
     );
 }
 
-fn process_request_frame(request_frame: &mut [u8], response_queue: &mut CommandTxQueue) {
-    let result : postcard::Result<protocol::Request>  = postcard::from_bytes_cobs(request_frame);
-    match result {
-        Ok(request) => process_request(request, response_queue),
-        Err(_) => {},
-    }
-}
 
-fn process_request(request : protocol::Request, response_queue: &mut CommandTxQueue) {
+fn process_request(request : protocol::Request) -> Option<protocol::Response> {
     match request.body {
         protocol::RequestBody::Ping => {
-            let response = protocol::Response {
+            return Some(protocol::Response {
                 correlation_id: request.correlation_id,
                 body: protocol::ResponseBody::Ping
-            };
-            let mut buffer : Buffer = [0; BUFFER_LENGTH];
-            match postcard::to_slice_cobs(&response, &mut buffer) {
-                Ok(frame) => push_frame(response_queue, frame),
-                Err(_) => panic!("Error serializing response")
-            }               
+            });
         }
     }
 }
 
-fn push_frame(queue: &mut CommandTxQueue, packet: &[u8]) {
-    queue.extend_back(packet.iter().cloned());
-}
 
-fn pop_frame(queue: &mut CommandRxQueue, packet: &mut Buffer) -> Option<usize> {
-    let available = queue.len();
-    for i in 0..available {
-        match queue.get(i) {
-            Some(byte) if *byte == DELIMITER => {
-                packet[i] = DELIMITER;
-                let length = i+1;
-                queue.drain(..length);
-                return Some(length);
-            }
-            Some(byte) => packet[i] = *byte,
-            None => break
-        }
-    }
-    return None;
-}
-
-fn read_to_queue_nb(
-    command_rx: &mut CommandRx,
-    command_rx_queue: &mut CommandRxQueue) -> bool {
-       loop {
-            match command_rx.read() {
-                Ok(byte) => {
-                    command_rx_queue.push_back(byte);
-                    return byte == DELIMITER;
-                },
-                Err(WouldBlock) => break,
-                Err(_) => panic!("Error reading from command serial"),
-            }
-        };
-        return false;
-}
-
-fn write_from_queue_nb(
-    command_tx: &mut CommandTx, 
-    command_tx_queue: &mut CommandTxQueue) {
-    loop {
-        match command_tx_queue.front() {
-            Some(byte) => {
-                match command_tx.write(*byte) {
-                    Ok(_) => assert!(command_tx_queue.pop_front().is_some()),
-                    Err(WouldBlock) => break,
-                    Err(_) => panic!("Error writing to command serial"),
-                }
-            }
-            None => break
-        }
-    }
-}
 
 
