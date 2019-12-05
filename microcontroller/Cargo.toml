@@ -5,7 +5,7 @@ name = "microcontroller"
 version = "0.1.0"
 
 [dependencies]
-embedded-hal = "0.2.3"
+embedded-hal = { version = "0.2.3", features = [ "unproven" ] }
 stm32f1xx-hal = { version = "0.4.0", features = ["rt", "stm32f103" ] }
 cortex-m = "0.6.1"
 # cortex-m-rt = "0.6.10"
