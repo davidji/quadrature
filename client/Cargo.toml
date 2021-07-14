@@ -7,8 +7,8 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-postcard = { version = "0.4.2", features = [ "use-std" ] }
-serde = { version = "1.0.103" }
+postcard = { version = "0.4.3", features = [ "use-std" ] }
+serde = { version = "1.0.106" }
 protocol = { path = "../protocol", version="0.1.0", features = [ "use-std" ] }
 serialport = "3.3.0"
 clap = "2.33.0"

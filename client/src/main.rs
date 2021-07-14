@@ -51,7 +51,7 @@ fn main() {
         
         let mut buffer : [u8; 256] = [0; 256];
         let frame = postcard::to_slice_cobs(&request, &mut buffer).unwrap();
-        sending_port.write(&frame[..]).unwrap();
+        sending_port.write_all(&frame[..]).unwrap();
         thread::sleep(Duration::from_millis(1000));
     });
     
